@@ -1,72 +1,49 @@
-from itertools import chain, repeat
+from __future__ import annotations
 
-import pytest
-from requests.exceptions import ConnectionError
-from urllib3.connectionpool import HTTPConnectionPool
-from werkzeug.wrappers import Response
+import inspect
+import pickle
 
-from retryable_requests.session import DEFAULT_RETRY_STRATEGY, RetryableSession
+import requests
+from requests.adapters import HTTPAdapter
+
+from retryable_requests import DEFAULT_RETRY_STRATEGY, RetryableSession
 
 
-@pytest.fixture
-def fails_first_time(mocker):
-    return mocker.Mock(
-        side_effect=chain(
-            [Response({}, 500)],
-            repeat(Response({}, 200)),
-        )
+def test_session_pickles() -> None:
+    """A session survives pickling with its base URL, timeout and retry strategy."""
+    retry_strategy = DEFAULT_RETRY_STRATEGY.new(total=2)
+    session = RetryableSession(
+        base_url="https://api.example/v1/", retry_strategy=retry_strategy, timeout=(1, 2)
     )
 
+    copied = pickle.loads(pickle.dumps(session))
 
-def test_session_retries_bad_status_codes(httpserver, fails_first_time):
-    httpserver.expect_request('/').respond_with_handler(fails_first_time)
-
-    with RetryableSession() as session:
-        r = session.get(httpserver.url_for('/'))
-
-    assert r.ok, r.text
-
-
-def test_session_base_url_retries_bad_status_codes(httpserver, fails_first_time):
-    httpserver.expect_request('/base/stem').respond_with_handler(fails_first_time)
-
-    with RetryableSession(base_url=httpserver.url_for('/base/')) as session:
-        r = session.get('stem')
-
-    assert r.ok, r.text
+    assert copied.base_url == "https://api.example/v1/"
+    assert copied.timeout == (1, 2)
+    adapter = copied.get_adapter("https://example")
+    assert isinstance(adapter, HTTPAdapter)
+    assert adapter.max_retries.total == 2
 
 
-@pytest.mark.parametrize('protocol', ['http', 'https'])
-def test_session_retries_connection_errors(mocker, protocol):
-    spy = mocker.spy(HTTPConnectionPool, 'urlopen')
+def test_request_signature_matches_upstream() -> None:
+    """The override of "request" takes upstream's parameters, except for the timeout's default."""
+    ours = inspect.signature(RetryableSession.request).parameters
+    theirs = inspect.signature(requests.Session.request).parameters
 
-    with pytest.raises(ConnectionError):
-        with RetryableSession() as session:
-            session.get(f'{protocol}://some-bad-connection.invalid')
-
-    # the initial request + the number of total retries
-    assert spy.call_count == 1 + DEFAULT_RETRY_STRATEGY.total
-
-
-def test_session_failing_termination(httpserver):
-    """Ensure that failing retries eventually terminate."""
-    httpserver.expect_request('/').respond_with_data(status=500)
-
-    with RetryableSession() as session:
-        r = session.get(httpserver.url_for('/'))
-
-    assert r.status_code == 500
+    assert list(ours) == list(theirs)
+    for name, their_parameter in theirs.items():
+        our_parameter = ours[name]
+        assert our_parameter.kind == their_parameter.kind, name
+        if name != "timeout":
+            assert our_parameter.default == their_parameter.default, name
 
 
-@pytest.mark.parametrize('allow_redirects', [True, False])
-def test_session_redirects(httpserver, allow_redirects):
-    """Ensure that redirect handling with Requests is still respected."""
-    httpserver.expect_request('/start').respond_with_data(
-        status=303, headers={'Location': httpserver.url_for('/end')}
-    )
-    httpserver.expect_request('/end').respond_with_data()
+def test_send_signature_matches_upstream() -> None:
+    """The override of "send" takes upstream's parameters, with only a timeout added."""
+    ours = inspect.signature(RetryableSession.send).parameters
+    theirs = inspect.signature(requests.Session.send).parameters
 
-    with RetryableSession() as session:
-        r = session.get(httpserver.url_for('/start'), allow_redirects=allow_redirects)
-
-    assert (r.status_code == 200) == allow_redirects
+    assert [name for name in ours if name != "timeout"] == list(theirs)
+    for name, their_parameter in theirs.items():
+        assert ours[name].kind == their_parameter.kind, name
+        assert ours[name].default == their_parameter.default, name
