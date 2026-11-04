@@ -1,11 +1,13 @@
-from importlib.metadata import PackageNotFoundError, version
+from __future__ import annotations
 
-try:
-    __version__ = version('retryable-requests')
-except PackageNotFoundError:
-    # package is not installed
-    pass
+from ._session import (
+    DEFAULT_RETRY_STRATEGY,
+    RetryableSession,
+    TimeoutType,
+)
 
-from .session import RetryableSession
-
-__all__ = ['RetryableSession']
+__all__ = [
+    "DEFAULT_RETRY_STRATEGY",
+    "RetryableSession",
+    "TimeoutType",
+]
