@@ -46,6 +46,8 @@ which also:
   - when a failing HTTP response exhausts the retries, it is returned, and can be surfaced by
     `raise_for_status()`
   - a failure to connect or a timeout, once the retries are exhausted, raises an exception
+- does not retry a request once its response has begun to arrive; a failure while its body is
+  read raises `ConnectionError`[^body]
 
 ## Options
 
@@ -125,3 +127,7 @@ second of jitter.
 [^retry-after]: A `Retry-After` of more than a minute is shortened to a minute.
 
 [^timeout]: A request times out after 3.05 seconds to connect and 30 seconds between bytes.
+
+[^body]: A response has begun to arrive once its status and headers are in. At that point, a timeout
+or a lost connection while the body downloads raises `ConnectionError`, streamed or not, and it is
+up to the caller to repeat the request.
